@@ -530,11 +530,11 @@ model Tenant {
   id            String             @id @default(cuid())
   slug          String             @unique
   name          String
+  description   String?            @db.VarChar(500)
+  discoverable  Boolean            @default(false)
   /// Set when an owner archives the tenant (#573). Archived tenants are
   /// hidden from the switcher and cannot be selected.
   archivedAt    DateTime?
-  description   String?            @db.VarChar(500)
-  discoverable  Boolean            @default(false)
   /// #517: the next issue number this tenant hands out. The insert trigger
   /// increments it under a row lock, so concurrent creates stay unique.
   nextIssueNumber Int             @default(1)
