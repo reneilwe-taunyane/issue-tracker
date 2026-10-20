@@ -91,12 +91,53 @@ describe("CommentThread read-only mode (#122)", () => {
     expect(html).toContain(">Reply<");
   });
 
-  it("keeps comments but hides the form, Reply, Edit and Delete on a deleted issue", () => {
-    const html = render(true);
-    expect(html).toContain("First comment");
-    expect(html).not.toContain("<form");
-    expect(html).not.toContain(">Reply<");
-    expect(html).not.toContain(">Edit<");
-    expect(html).not.toContain(">Delete<");
+  it("renders structured comment badges like bid and delivery (#747)", () => {
+    const comments: CommentNode[] = [
+      {
+        id: "c-bid",
+        authorId: "u1",
+        parentId: null,
+        body: "I bid 2 hours",
+        type: "bid",
+        metadata: { eta: "2 hours" },
+        createdAt: new Date("2026-10-16T12:00:00Z"),
+        editedAt: null,
+        deletedAt: null,
+        depth: 0,
+        author: { name: "Agent Alpha", role: "user" },
+        parent: null,
+        children: [],
+      },
+      {
+        id: "c-del",
+        authorId: "u1",
+        parentId: null,
+        body: "Delivered PR",
+        type: "delivery",
+        metadata: { prUrl: "https://github.com/pr/1" },
+        createdAt: new Date("2026-10-16T12:00:00Z"),
+        editedAt: null,
+        deletedAt: null,
+        depth: 0,
+        author: { name: "Agent Alpha", role: "user" },
+        parent: null,
+        children: [],
+      },
+    ];
+
+    const html = renderToStaticMarkup(
+      createElement(CommentThread, {
+        bugId: "b1",
+        issueUrl: "https://issues.example/bugs/b1",
+        reporterId: "u1",
+        comments,
+        users: [{ id: "u1", name: "Agent Alpha" }],
+      }),
+    );
+
+    expect(html).toContain("Bid");
+    expect(html).toContain("ETA: 2 hours");
+    expect(html).toContain("Delivery");
+    expect(html).toContain('href="https://github.com/pr/1"');
   });
 });

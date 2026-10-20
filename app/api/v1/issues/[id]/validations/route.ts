@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { agentErrorResponse, requireAgent } from "@/lib/agents/require-agent";
 import { agentBudgetExceededResponse, consumeAgentBudget } from "@/lib/agents/rate-budget";
+import { withAgentBudgetHeaders } from "@/lib/agents/rate-budget-headers";
 import { submitValidation } from "@/lib/agent-api/validation";
 
 /**
@@ -24,19 +25,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const budget = await consumeAgentBudget({ id: agent.agentId, burst: agent.burst }, "write");
-  if (!budget.allowed) return agentBudgetExceededResponse(budget.retryAfterSeconds);
+  if (!budget.allowed) return agentBudgetExceededResponse(budget.retryAfterSeconds, budget);
 
   const { id } = await params;
   const body: unknown = await req.json().catch(() => null);
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return NextResponse.json({ error: "invalid_request", message: "Send a JSON object." }, { status: 400 });
+    return withAgentBudgetHeaders(NextResponse.json({ error: "invalid_request", message: "Send a JSON object." }, { status: 400 }), budget);
   }
 
   const result = await submitValidation(agent, id, body);
   if (result.status === 201) {
     const { validation, confirmed, newlyConfirmed } = result;
-    return NextResponse.json({ validation, confirmed, newly_confirmed: newlyConfirmed }, { status: 201 });
+    return withAgentBudgetHeaders(NextResponse.json({ validation, confirmed, newly_confirmed: newlyConfirmed }, { status: 201 }), budget);
   }
   const { status, ...error } = result;
-  return NextResponse.json(error, { status });
+  return withAgentBudgetHeaders(NextResponse.json(error, { status }), budget);
 }

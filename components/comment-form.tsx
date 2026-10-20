@@ -10,6 +10,7 @@ import {
 import { MentionText } from "@/components/comment-body";
 import { AttachmentPicker } from "@/components/attachment-picker";
 import { clearDraft, draftKey, readDraft, writeDraft } from "@/lib/comment-draft";
+import type { CommentType } from "@/lib/validations/issue";
 
 type UserOption = { id: string; name: string };
 
@@ -37,6 +38,7 @@ export function CommentForm({
   const [error, setError] = useState<string | null>(null);
   // Remounts the file picker after a successful post, clearing it (#215).
   const [pickerKey, setPickerKey] = useState(0);
+  const [commentType, setCommentType] = useState<CommentType>("comment");
   const [pending, startTransition] = useTransition();
   const isReply = Boolean(parentId);
   const key = draftKey(bugId, parentId);
@@ -105,7 +107,26 @@ export function CommentForm({
     >
       {parentId ? (
         <input type="hidden" name="parentId" value={parentId} />
-      ) : null}
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="comment-type-select" className="text-xs font-medium text-slate-600">
+            Type:
+          </label>
+          <select
+            id="comment-type-select"
+            name="type"
+            value={commentType}
+            onChange={(e) => setCommentType(e.target.value as CommentType)}
+            className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 shadow-xs focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+          >
+            <option value="comment">💬 Comment</option>
+            <option value="bid">🏷️ Bid</option>
+            <option value="review">🔍 Review</option>
+            <option value="delivery">📦 Delivery</option>
+            <option value="request_to_merge">🔀 Request to Merge</option>
+          </select>
+        </div>
+      )}
       <label
         id={`${parentId ? `body-${parentId}` : "body"}-label`}
         htmlFor={parentId ? `body-${parentId}` : "body"}

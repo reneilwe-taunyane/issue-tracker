@@ -1102,9 +1102,21 @@ export async function addCommentAction(
     return { error: RATE_LIMIT_MESSAGE };
   }
 
+  let metadata: Record<string, unknown> | undefined;
+  const metadataRaw = formData.get("metadata");
+  if (typeof metadataRaw === "string" && metadataRaw.trim()) {
+    try {
+      metadata = JSON.parse(metadataRaw);
+    } catch {
+      // ignore invalid json metadata
+    }
+  }
+
   const parsed = commentSchema.safeParse({
     body: formData.get("body"),
     parentId: formData.get("parentId") || undefined,
+    type: formData.get("type") || undefined,
+    metadata,
   });
 
   if (!parsed.success) {
@@ -1161,6 +1173,8 @@ export async function addCommentAction(
         authorId: userId,
         body: normalizedBody,
         parentId: parentId ?? null,
+        type: parsed.data.type ?? "comment",
+        metadata: parsed.data.metadata ? (parsed.data.metadata as Prisma.InputJsonValue) : undefined,
       },
       select: { id: true },
     });
@@ -1382,6 +1396,9 @@ export async function deleteBugAction(bugId: string): Promise<ActionResult> {
           deletedAt: new Date(),
         },
       });
+      // Delete attachments associated with the issue to prevent storage bloat (#658)
+      await tx.attachment.deleteMany({ where: { bugId } });
+
       await publishWebEvent(tx, { bugId, type: "issue.deleted", actorUserId: user.id });
 
       await tx.bugActivity.create({

@@ -116,27 +116,57 @@ export default async function TenantsPage({
       ) : null}
 
       {!hasTenants && !inviteId ? (
-        <section aria-labelledby="discover-workspaces" className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-          <h2 id="discover-workspaces" className="border-b border-slate-200 bg-slate-50 px-4 py-3 text-base font-semibold text-slate-900 sm:px-6">
-            Discover workspaces
-          </h2>
-          {discoverable.length === 0 ? (
-            <p className="px-4 py-4 text-sm text-slate-600 sm:px-6">No workspaces are currently accepting join requests. You can still join with an invite or create a workspace.</p>
-          ) : (
-            <ul className="divide-y divide-slate-200">
-              {discoverable.map((tenant) => (
-                <li key={tenant.id} className="flex flex-wrap items-center gap-4 px-4 py-4 sm:px-6">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-slate-900">{tenant.name}</p>
-                    {tenant.description ? <p className="mt-1 whitespace-pre-wrap text-sm text-slate-600">{tenant.description}</p> : null}
-                    {tenant.memberships[0]?.user.name ? <p className="mt-1 text-xs text-slate-500">Owner: {tenant.memberships[0].user.name}</p> : null}
-                  </div>
-                  <JoinWorkspaceForm tenantId={tenant.id} pending={tenant.joinRequests[0]?.status === "pending"} />
-                </li>
-              ))}
+        <>
+          {/* #641: a newcomer's first step is their own workspace, explained. */}
+          <section aria-labelledby="how-ziki-works" className="rounded-xl border border-teal-200 bg-teal-50/60 p-4 sm:p-6">
+            <h2 id="how-ziki-works" className="text-base font-semibold text-slate-900">
+              How Ziki is organised
+            </h2>
+            <ul className="mt-2 space-y-1.5 text-sm text-slate-700">
+              <li>
+                <span className="font-medium">A workspace</span> (tenant) is your team or company: its people,
+                projects and issues. Nobody outside it sees them.
+              </li>
+              <li>
+                <span className="font-medium">A project</span> is one product inside it, such as a web app.
+              </li>
+              <li>
+                <span className="font-medium">Issues</span> are the bugs and requests filed against a project, by
+                people and their agents.
+              </li>
             </ul>
-          )}
-        </section>
+          </section>
+          <section aria-labelledby="create-tenant-first" className={card}>
+            <h2 id="create-tenant-first" className="text-base font-semibold text-slate-900">
+              Create your workspace
+            </h2>
+            <p className="mt-1 text-sm text-slate-600">
+              It takes one name. You&apos;ll be its owner, and a first project is created with it.
+            </p>
+            <CreateTenantForm nameMax={TENANT_NAME_MAX} />
+          </section>
+          <section aria-labelledby="discover-workspaces" className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+            <h2 id="discover-workspaces" className="border-b border-slate-200 bg-slate-50 px-4 py-3 text-base font-semibold text-slate-900 sm:px-6">
+              Discover workspaces
+            </h2>
+            {discoverable.length === 0 ? (
+              <p className="px-4 py-4 text-sm text-slate-600 sm:px-6">No workspaces are currently accepting join requests. You can still join with an invite or create a workspace.</p>
+            ) : (
+              <ul className="divide-y divide-slate-200">
+                {discoverable.map((tenant) => (
+                  <li key={tenant.id} className="flex flex-wrap items-center gap-4 px-4 py-4 sm:px-6">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold text-slate-900">{tenant.name}</p>
+                      {tenant.description ? <p className="mt-1 whitespace-pre-wrap text-sm text-slate-600">{tenant.description}</p> : null}
+                      {tenant.memberships[0]?.user.name ? <p className="mt-1 text-xs text-slate-500">Owner: {tenant.memberships[0].user.name}</p> : null}
+                    </div>
+                    <JoinWorkspaceForm tenantId={tenant.id} pending={tenant.joinRequests[0]?.status === "pending"} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </>
       ) : null}
 
       {hasTenants ? (
@@ -224,17 +254,21 @@ export default async function TenantsPage({
           Join with an invite
         </h2>
         <p className="mt-1 text-sm text-slate-600">
-          Tenants are invite-only. Open the link an owner or admin sent you, or paste it here.
+          {hasTenants
+            ? "Tenants are invite-only. Open the link an owner or admin sent you, or paste it here."
+            : "Joining your team instead? Open the invite link an owner or admin sent you, or paste it here."}
         </p>
         <InviteLinkForm />
       </section>
 
-      <section aria-labelledby="create-tenant" className={card}>
-        <h2 id="create-tenant" className="text-base font-semibold text-slate-900">
-          Create a tenant
-        </h2>
-        <CreateTenantForm nameMax={TENANT_NAME_MAX} />
-      </section>
+      {hasTenants || inviteId ? (
+        <section aria-labelledby="create-tenant" className={card}>
+          <h2 id="create-tenant" className="text-base font-semibold text-slate-900">
+            Create a tenant
+          </h2>
+          <CreateTenantForm nameMax={TENANT_NAME_MAX} />
+        </section>
+      ) : null}
 
       {zeduOwnerNeeded ? (
         <section aria-labelledby="zedu-owner" className="rounded-xl border border-amber-200 bg-amber-50 p-4 sm:p-6">

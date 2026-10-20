@@ -43,3 +43,52 @@ describe("pruneUnlinkedUploads (#543)", () => {
     expect(db.attachment.deleteMany).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("sweepOrphanedAttachments (#658)", () => {
+  it("purges unlinked uploads older than TTL and attachments of deleted bugs/comments", async () => {
+    const findMany = vi.fn()
+      .mockResolvedValueOnce([{ id: "u-1" }, { id: "u-2" }]) // unlinked
+      .mockResolvedValueOnce([{ id: "b-1" }]) // deleted bug
+      .mockResolvedValueOnce([{ id: "c-1" }]); // deleted comment
+    const deleteMany = vi.fn()
+      .mockResolvedValueOnce({ count: 2 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+
+    const db = { attachment: { findMany, deleteMany } };
+    const { sweepOrphanedAttachments, ORPHANED_UPLOAD_TTL_MS } = await import("./attachment-retention");
+
+    const result = await sweepOrphanedAttachments(db as never, { now, sweep: true });
+    expect(result).toEqual({ unlinked: 2, deletedParents: 2, total: 4 });
+
+    const cutoff = new Date(now.getTime() - ORPHANED_UPLOAD_TTL_MS);
+    expect(findMany).toHaveBeenNthCalledWith(1, {
+      where: { bugId: null, commentId: null, redesignProposalId: null, createdAt: { lt: cutoff } },
+      select: { id: true },
+      take: 500,
+    });
+    expect(findMany).toHaveBeenNthCalledWith(2, {
+      where: { bug: { isDeleted: true } },
+      select: { id: true },
+      take: 500,
+    });
+    expect(findMany).toHaveBeenNthCalledWith(3, {
+      where: { comment: { deletedAt: { not: null } } },
+      select: { id: true },
+      take: 500,
+    });
+  });
+
+  it("skips execution when sweep is false", async () => {
+    const findMany = vi.fn();
+    const deleteMany = vi.fn();
+    const db = { attachment: { findMany, deleteMany } };
+    const { sweepOrphanedAttachments } = await import("./attachment-retention");
+
+    const result = await sweepOrphanedAttachments(db as never, { now, sweep: false });
+    expect(result).toEqual({ unlinked: 0, deletedParents: 0, total: 0 });
+    expect(findMany).not.toHaveBeenCalled();
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+});
+

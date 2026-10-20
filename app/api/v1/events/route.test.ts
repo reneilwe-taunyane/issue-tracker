@@ -13,7 +13,7 @@ import { GET } from "./route";
 import { GET as subscriptions, POST as subscribe } from "../webhooks/route";
 import { DELETE, PATCH } from "../webhooks/[id]/route";
 import { decodeEventCursor, encodeEventCursor } from "@/lib/agent-api/events";
-import { decryptSigningSecret } from "@/lib/webhooks/sign";
+import { decryptSigningSecret, sign, verify } from "@/lib/webhooks/sign";
 
 function request(path = "/events", method = "GET", body?: unknown, key = true) {
   return new NextRequest(`http://localhost/api/v1${path}`, { method,
@@ -202,8 +202,34 @@ describe("webhook subscription endpoints", () => {
     const stored = db.webhookSubscription.update.mock.calls[0][0].data.signingSecretEncrypted;
     expect(stored).not.toBe(rawSecret);
     expect(decryptSigningSecret(stored)).toBe(rawSecret);
-    // Rotating replaces only the secret: the subscription keeps its state.
-    expect(db.webhookSubscription.update.mock.calls[0][0].data).toEqual({ signingSecretEncrypted: stored });
+    // #643: rotating also clears the failures and re-enables the subscription,
+    // keeping the same id.
+    expect(db.webhookSubscription.update.mock.calls[0][0]).toMatchObject({
+      where: { id: "subscription-a" },
+      data: { signingSecretEncrypted: stored, enabled: true, disabledAt: null, failureCount: 0 },
+    });
+  });
+
+  it("makes the old secret stop verifying and keeps the raw secret out of the audit log (#643)", async () => {
+    const first = await (await PATCH(request("/webhooks/id", "PATCH", { rotateSecret: true }), context)).json();
+    const second = await (await PATCH(request("/webhooks/id", "PATCH", { rotateSecret: true }), context)).json();
+    const oldSecret = first.subscription.signingSecret as string;
+    const newSecret = second.subscription.signingSecret as string;
+    expect(newSecret).not.toBe(oldSecret);
+
+    // A delivery signed now uses the stored (new) secret.
+    const stored = db.webhookSubscription.update.mock.calls[1][0].data.signingSecretEncrypted;
+    const timestampMs = Date.now();
+    const rawBody = JSON.stringify({ type: "issue.created" });
+    const signature = sign({ rawSecret: decryptSigningSecret(stored), timestampMs, rawBody });
+    expect(verify({ rawSecret: newSecret, signature, timestampMs, rawBody })).toBe(true);
+    expect(verify({ rawSecret: oldSecret, signature, timestampMs, rawBody })).toBe(false);
+
+    // The audit rows record the action and status, never the secret.
+    const audited = JSON.stringify(db.agentAuditEvent.create.mock.calls);
+    expect(audited).toContain("webhooks.rotateSecret");
+    expect(audited).not.toContain(oldSecret);
+    expect(audited).not.toContain(newSecret);
   });
 
   it("re-enables without rotating when no rotation is asked for", async () => {

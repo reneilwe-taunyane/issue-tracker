@@ -55,6 +55,10 @@ async function hitMany(items: RateLimitItem[], now: number): Promise<RateLimitRe
 
     const blocked: RateLimitResult[] = [];
     const hitsToAdd = new Map<string, number>();
+    // #646: what's left after this attempt, and when the window frees up,
+    // from the count this check reads anyway. The tightest item wins.
+    let remaining = Number.POSITIVE_INFINITY;
+    let resetAfterMs = 0;
 
     for (const item of prepared) {
       const addedSoFar = hitsToAdd.get(item.hashed) ?? 0;
@@ -71,21 +75,26 @@ async function hitMany(items: RateLimitItem[], now: number): Promise<RateLimitRe
         });
       } else {
         hitsToAdd.set(item.hashed, addedSoFar + 1);
+        remaining = Math.min(remaining, item.config.max - (count + 1));
+        const oldest = rows[0]?.oldest != null ? Number(rows[0].oldest) : now;
+        resetAfterMs = Math.max(resetAfterMs, Math.max(0, oldest + item.config.windowMs - now));
       }
     }
 
     if (blocked.length > 0) {
-      return {
-        allowed: false,
-        retryAfterMs: Math.max(...blocked.map((b) => b.retryAfterMs)),
-      };
+      const retryAfterMs = Math.max(...blocked.map((b) => b.retryAfterMs));
+      return { allowed: false, retryAfterMs, remaining: 0, resetAfterMs: retryAfterMs };
     }
 
     for (const item of prepared) {
       await tx.$executeRaw`INSERT INTO "RateLimitHit" ("key", "at") VALUES (${item.hashed}, ${BigInt(now)})`;
     }
 
-    return { allowed: true, retryAfterMs: 0 };
+    return {
+      allowed: true,
+      retryAfterMs: 0,
+      ...(Number.isFinite(remaining) ? { remaining, resetAfterMs } : {}),
+    };
   });
 
   if (Math.random() * CLEANUP_EVERY < 1) {

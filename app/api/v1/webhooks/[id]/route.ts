@@ -84,14 +84,20 @@ export async function PATCH(
 
         // Rotating replaces the secret the receiver verifies deliveries with.
         // The new raw secret is shown once, like on creation; the stored copy
-        // stays encrypted so the server can keep signing.
+        // stays encrypted so the server can keep signing. Deliveries are signed
+        // when they are sent, so pending ones go out with the new secret.
+        //
+        // #643: rotation is also how a receiver recovers after a leak, and a
+        // subscription that failed while its secret was wrong would otherwise
+        // stay disabled. Rotating clears the failure count and re-enables it,
+        // keeping the same id and delivery history.
         if (rotate) {
           const rawSecret = generateSigningSecret();
           const signingSecretEncrypted = encryptSigningSecret(rawSecret);
           const subscription = await prisma.webhookSubscription.update({
             where: { id },
-            data: { signingSecretEncrypted },
-            select: { id: true, url: true, enabled: true, createdAt: true, updatedAt: true },
+            data: { signingSecretEncrypted, enabled: true, disabledAt: null, failureCount: 0 },
+            select: { id: true, url: true, enabled: true, failureCount: true, createdAt: true, updatedAt: true },
           });
           return NextResponse.json({ subscription: { ...subscription, signingSecret: rawSecret } });
         }

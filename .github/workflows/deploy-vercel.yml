@@ -1,82 +1,89 @@
-name: Deploy (Vercel Staging)
+name: Deploy (Vercel Production)
 
-# Deploys Team Zendor's fork (Zedu-Endor/bug-tracker) to Vercel on every merge to main.
-# This provides a live testing environment for the team to verify changes before
-# submitting PRs upstream to zeduchat/bug-tracker (which deploys to Coolify).
+# Deploys Team Zendor's fork (Zedu-Endor/issue-tracker) to Vercel production,
+# only after CI has succeeded and the Malware Scan (CI Gate) passed on the same
+# commit — the same gate the Coolify deploy waits for (#579).
+#
+# Vercel CLI is pinned to a major version so an upstream CLI release cannot
+# change deploy semantics unannounced.
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: vercel-deploy-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
-  verify:
-    name: Verify (Lint, Type Check & Test)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
-      AUTH_SECRET: "ci-build-secret-dummy-must-be-long-enough-32-chars"
-      NEXTAUTH_URL: "http://localhost:3000"
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.14.0
-
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: "pnpm"
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Lint
-        run: pnpm lint
-
-      - name: Type check
-        run: pnpm exec tsc --noEmit
-
-      - name: Test
-        run: pnpm test
-
   deploy:
-    name: Deploy to Vercel
-    needs: [verify]
+    name: Deploy to Vercel (production)
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' 
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
     steps:
+      - name: Wait for Malware Scan (CI Gate)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          echo "Verifying Malware Scan (CI Gate) for commit $HEAD_SHA in $GH_REPO..."
+
+          ELAPSED=0
+          TIMEOUT=600
+          while true; do
+            STATUS=$(gh run list --repo "$GH_REPO" --commit "$HEAD_SHA" --branch main --event push --workflow "Malware Scan (CI Gate)" --json status,conclusion --jq '.[0] // empty')
+            if [[ -n "$STATUS" ]]; then
+              RUN_STATUS=$(echo "$STATUS" | jq -r '.status')
+              RUN_CONCLUSION=$(echo "$STATUS" | jq -r '.conclusion')
+              echo "Malware Scan status: $RUN_STATUS, conclusion: $RUN_CONCLUSION"
+
+              if [[ "$RUN_STATUS" == "completed" ]]; then
+                if [[ "$RUN_CONCLUSION" != "success" ]]; then
+                  echo "Malware Scan (CI Gate) did not succeed (conclusion: $RUN_CONCLUSION). Aborting deployment."
+                  exit 1
+                fi
+                echo "Malware Scan (CI Gate) succeeded!"
+                break
+              fi
+            else
+              echo "Waiting for Malware Scan (CI Gate) run to be registered..."
+            fi
+
+            if [[ $ELAPSED -ge $TIMEOUT ]]; then
+              echo "Timed out waiting for Malware Scan (CI Gate)"
+              exit 1
+            fi
+
+            sleep 10
+            ELAPSED=$((ELAPSED + 10))
+          done
+
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
         with:
-          version: 10.14.0
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: "pnpm"
 
       - name: Check Vercel Secrets
         id: check-secrets
@@ -91,9 +98,9 @@ jobs:
             echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install Vercel CLI
+      - name: Install Vercel CLI (pinned major)
         if: steps.check-secrets.outputs.configured == 'true'
-        run: pnpm add -g vercel@latest
+        run: npm install -g "vercel@48"
 
       - name: Pull Vercel Environment Information
         if: steps.check-secrets.outputs.configured == 'true'

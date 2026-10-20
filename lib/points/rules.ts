@@ -26,7 +26,12 @@ export const MAX_REWARDED_REVIEWERS = 2;
 export const TARGET_POINTS = 500;
 export const TARGET_SOLVED_TASKS = 20;
 
-export type PointRole = "solver" | "reporter" | "reviewer";
+export type PointRole = "solver" | "reporter" | "reviewer" | "submission";
+
+/** The idempotency key for a job-submission award (#617). */
+export function jobSubmissionSourceKey(jobId: string, submissionId: string): string {
+  return `job:${jobId}:submission:${submissionId}`;
+}
 
 export function solverPoints(severity: Severity): number {
   return SOLVER_POINTS[severity];

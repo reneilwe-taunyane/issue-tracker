@@ -61,6 +61,9 @@ import { bugInTenant, currentTenantIdFor, isMissingTenantColumnError } from "@/l
 import { activeProjectIdFor } from "@/lib/project-context";
 import { RichText } from "@/components/rich-text";
 import { isOrganizationAdmin } from "@/lib/organization-role";
+import { cookies } from "next/headers";
+import { GettingStarted } from "@/components/getting-started";
+import { GETTING_STARTED_COOKIE, gettingStartedFor, parseDismissed, type GettingStartedStep } from "@/lib/onboarding";
 import {
   PLATFORM_PARAM,
   parsePlatformFilter,
@@ -142,6 +145,24 @@ export default async function BugsPage({
   const activeProject = tenantId && projectId
     ? await prisma.project.findFirst({ where: { id: projectId, tenantId }, select: { slug: true, name: true, goal: true } }).catch(() => null)
     : null;
+
+  // #641: a short checklist for a new workspace's owner or admin, until it's
+  // done or dismissed on this device.
+  let gettingStarted: { tenantId: string; workspaceName: string; steps: GettingStartedStep[] } | null = null;
+  if (tenantId && userId && membershipRole && isOrganizationAdmin(membershipRole, effectiveRole)) {
+    try {
+      const dismissed = parseDismissed((await cookies()).get(GETTING_STARTED_COOKIE)?.value);
+      if (!dismissed.includes(tenantId)) {
+        const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true, slug: true } });
+        if (tenant) {
+          const checklist = await gettingStartedFor(prisma, tenantId, { tenantSlug: tenant.slug });
+          if (!checklist.complete) gettingStarted = { tenantId, workspaceName: tenant.name, steps: checklist.steps };
+        }
+      }
+    } catch (error) {
+      console.error("[bugs] getting-started checklist failed", error);
+    }
+  }
 
   const canDelete = canDeleteTicket(effectiveRole, membershipRole);
   const params = await searchParams;
@@ -453,6 +474,7 @@ export default async function BugsPage({
 
   const page = (
     <div className="space-y-6">
+      {gettingStarted ? <GettingStarted {...gettingStarted} /> : null}
       {activeProject?.goal ? (
         <section aria-labelledby="project-goal-heading" className="rounded-xl border border-teal-200 bg-teal-50/60 px-4 py-3">
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -914,7 +936,11 @@ function FirstRunWelcome({
       </div>
       {isAdmin ? (
         <p className="mx-auto mt-6 max-w-md text-sm text-slate-600">
-          Before people start reporting, you may want to set up the{" "}
+          Before people start reporting, you may want to set up your{" "}
+          <Link href="/projects" className="font-medium text-teal-700 underline">
+            projects
+          </Link>
+          , and the{" "}
           <Link href="/admin/categories" className="font-medium text-teal-700 underline">
             platforms
           </Link>{" "}

@@ -1,4 +1,4 @@
-import type { PrismaClient, Prisma } from "@prisma/client";
+import type { PrismaClient, Prisma, PointRole } from "@prisma/client";
 import { award } from "./award";
 
 /**
@@ -15,7 +15,7 @@ export type PointEntryLike = {
   tenantId: string;
   userId: string;
   bugId: string | null;
-  role: "solver" | "reporter" | "reviewer";
+  role: PointRole;
   points: number;
 };
 

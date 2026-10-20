@@ -8,6 +8,7 @@ import {
   RETENTION_SWEEP_EVERY,
   pruneAgentRows,
 } from "./agent-retention";
+import { RATE_LIMIT_RETENTION_MS } from "@/lib/rate-limit";
 
 const now = new Date("2026-10-20T12:00:00Z");
 const cutoff = (ms: number) => new Date(now.getTime() - ms);
@@ -17,9 +18,9 @@ type Model = {
   deleteMany: ReturnType<typeof vi.fn>;
 };
 
-function model(removed = 0): Model {
+function model(removed = 0, id: (index: number) => string | bigint = (i) => `row-${i}`): Model {
   return {
-    findMany: vi.fn(async () => Array.from({ length: removed }, (_, i) => ({ id: `row-${i}` }))),
+    findMany: vi.fn(async () => Array.from({ length: removed }, (_, i) => ({ id: id(i) }))),
     deleteMany: vi.fn(async () => ({ count: removed })),
   };
 }
@@ -30,6 +31,7 @@ function makeDb() {
     agentEvent: model(),
     agentPairing: model(),
     agentAuditEvent: model(),
+    rateLimitHit: model(),
   };
 }
 
@@ -48,11 +50,17 @@ describe("agent data retention (#546)", () => {
     expect(AUDIT_RETENTION_MS).toBe(180 * 24 * 60 * 60 * 1000);
   });
 
-  it("prunes nothing when the sweep is off", async () => {
+  it("always prunes rate-limit hits when the regular sweep is off", async () => {
     await expect(pruneAgentRows(db as never, { now, sweep: false })).resolves.toEqual({
-      deliveries: 0, events: 0, pairings: 0, auditEvents: 0,
+      deliveries: 0, events: 0, pairings: 0, auditEvents: 0, rateLimitHits: 0,
     });
-    for (const table of Object.values(db)) {
+    expect(db.rateLimitHit.findMany).toHaveBeenCalledWith({
+      where: { at: { lt: BigInt(now.getTime() - RATE_LIMIT_RETENTION_MS) } },
+      select: { id: true },
+      take: RETENTION_BATCH,
+    });
+    expect(db.rateLimitHit.deleteMany).not.toHaveBeenCalled();
+    for (const table of Object.entries(db).filter(([name]) => name !== "rateLimitHit").map(([, table]) => table)) {
       expect(table.findMany).not.toHaveBeenCalled();
       expect(table.deleteMany).not.toHaveBeenCalled();
     }
@@ -80,6 +88,11 @@ describe("agent data retention (#546)", () => {
       select: { id: true },
       take: RETENTION_BATCH,
     });
+    expect(db.rateLimitHit.findMany).toHaveBeenCalledWith({
+      where: { at: { lt: BigInt(now.getTime() - RATE_LIMIT_RETENTION_MS) } },
+      select: { id: true },
+      take: RETENTION_BATCH,
+    });
   });
 
   it("deletes the found rows with the retention filter re-checked and sums the counts", async () => {
@@ -87,8 +100,9 @@ describe("agent data retention (#546)", () => {
     db.agentEvent = model(5);
     db.agentPairing = model(1);
     db.agentAuditEvent = model(3);
+    db.rateLimitHit = model(2, (i) => BigInt(i + 1));
     await expect(pruneAgentRows(db as never, { now, sweep: true })).resolves.toEqual({
-      deliveries: 2, events: 5, pairings: 1, auditEvents: 3,
+      deliveries: 2, events: 5, pairings: 1, auditEvents: 3, rateLimitHits: 2,
     });
     expect(db.webhookDelivery.deleteMany).toHaveBeenCalledWith({
       where: {
@@ -106,6 +120,12 @@ describe("agent data retention (#546)", () => {
     expect(db.agentAuditEvent.deleteMany).toHaveBeenCalledWith({
       where: { id: { in: ["row-0", "row-1", "row-2"] }, createdAt: { lt: cutoff(AUDIT_RETENTION_MS) } },
     });
+    expect(db.rateLimitHit.deleteMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: [BigInt(1), BigInt(2)] },
+        at: { lt: BigInt(now.getTime() - RATE_LIMIT_RETENTION_MS) },
+      },
+    });
   });
 
   it("keeps only finished webhook deliveries: pending and failed rows are never pruned", async () => {
@@ -120,7 +140,7 @@ describe("agent data retention (#546)", () => {
     db.agentEvent = model(4);
     db.agentEvent.deleteMany.mockResolvedValueOnce({ count: 0 });
     await expect(pruneAgentRows(db as never, { now, sweep: true })).resolves.toEqual({
-      deliveries: 0, events: 0, pairings: 0, auditEvents: 0,
+      deliveries: 0, events: 0, pairings: 0, auditEvents: 0, rateLimitHits: 0,
     });
   });
 

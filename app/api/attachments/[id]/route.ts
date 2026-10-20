@@ -49,3 +49,58 @@ export async function GET(
     headers: attachmentResponseHeaders(attachment),
   });
 }
+
+/**
+ * Delete an attachment (#658).
+ * Allowed for the uploader (e.g. form abandoned or user removed file),
+ * or an admin of the tenant where the parent issue/comment/proposal lives.
+ */
+export async function DELETE(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const user = await requireUser();
+
+  const attachment = await prisma.attachment.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      uploaderId: true,
+      bugId: true,
+      commentId: true,
+      redesignProposalId: true,
+      bug: { select: { tenantId: true } },
+      comment: { select: { bug: { select: { tenantId: true } } } },
+      redesignProposal: { select: { tenantId: true } },
+    },
+  });
+
+  if (!attachment) {
+    return NextResponse.json({ error: "File not found" }, { status: 404 });
+  }
+
+  let allowed = attachment.uploaderId === user.id;
+
+  if (!allowed) {
+    const tenantId =
+      attachment.bug?.tenantId ??
+      attachment.comment?.bug?.tenantId ??
+      attachment.redesignProposal?.tenantId;
+    if (tenantId) {
+      const access = await tenantAccessFor(user.id, tenantId, user.role);
+      allowed = access.admin;
+    }
+  }
+
+  if (!allowed) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  }
+
+  await prisma.attachment.delete({
+    where: { id },
+  });
+
+  return NextResponse.json({ success: true }, { status: 200 });
+}
+

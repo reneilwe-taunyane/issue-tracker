@@ -127,6 +127,18 @@ export const categorySchema = z.object({
 /** Alias for categorySchema matching the user-facing Platform domain terminology (#355). */
 export const platformSchema = categorySchema;
 
+export const commentTypeValues = [
+  "comment",
+  "bid",
+  "review",
+  "delivery",
+  "request_to_merge",
+] as const;
+
+export type CommentType = (typeof commentTypeValues)[number];
+
+export const commentTypeSchema = z.enum(commentTypeValues);
+
 export const commentSchema = z.object({
   body: z
     .string()
@@ -144,6 +156,8 @@ export const commentSchema = z.object({
     .optional()
     .or(z.literal(""))
     .transform((value) => (value && value.length > 0 ? value : undefined)),
+  type: commentTypeSchema.optional().default("comment"),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const loginSchema = z.object({

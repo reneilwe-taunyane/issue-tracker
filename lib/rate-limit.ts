@@ -54,20 +54,25 @@ export function checkRateLimit(
   key: string,
   config: RateLimitConfig,
   now = Date.now(),
-): { allowed: boolean; retryAfterMs: number } {
+): RateLimitResult {
   const windowStart = now - config.windowMs;
   const timestamps = (tracker.get(key) ?? []).filter((t) => t > windowStart);
 
   if (timestamps.length >= config.max) {
     const oldest = timestamps[0] ?? now;
     const retryAfterMs = Math.max(0, oldest + config.windowMs - now);
-    return { allowed: false, retryAfterMs };
+    return { allowed: false, retryAfterMs, remaining: 0, resetAfterMs: retryAfterMs };
   }
 
   timestamps.push(now);
   tracker.set(key, timestamps);
   if (tracker.size > MAX_TRACKED_KEYS) pruneExpired(now);
-  return { allowed: true, retryAfterMs: 0 };
+  return {
+    allowed: true,
+    retryAfterMs: 0,
+    remaining: config.max - timestamps.length,
+    resetAfterMs: Math.max(0, (timestamps[0] ?? now) + config.windowMs - now),
+  };
 }
 
 export type RateLimitItem = {
@@ -340,7 +345,18 @@ export function clientRateLimitKey(
 // everyone and never to no limit at all.
 // ---------------------------------------------------------------------------
 
-export type RateLimitResult = { allowed: boolean; retryAfterMs: number };
+export type RateLimitResult = {
+  allowed: boolean;
+  retryAfterMs: number;
+  /**
+   * Attempts left in the window after this one (#646). Computed from the
+   * same read the check already does, so reporting it costs nothing extra.
+   * Optional: stores and test doubles that don't know it leave it out.
+   */
+  remaining?: number;
+  /** When the oldest counted attempt leaves the window, in ms from now (#646). */
+  resetAfterMs?: number;
+};
 
 export type RateLimitStore = {
   hit(key: string, config: RateLimitConfig, now: number): Promise<RateLimitResult>;

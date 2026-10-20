@@ -79,10 +79,22 @@ export function sameRepo(a: RepoRef, b: RepoRef): boolean {
 
 export type PullRequest = { merged: boolean; mergeable: boolean; headSha: string };
 
+/** What GitHub answered the merge request (#492). */
+export type MergePullResult = {
+  merged: boolean;
+  sha?: string;
+  forbidden?: boolean;
+  /** GitHub refused because the head moved since the checks were read. */
+  conflict?: boolean;
+  /** The repository allows no merge method the app can use. */
+  noAllowedMethod?: boolean;
+};
+
 export interface GitHubClient {
   getPullRequest(ref: PullRequestRef): Promise<PullRequest>;
   checksGreen(ref: PullRequestRef, headSha: string): Promise<boolean>;
-  mergePullRequest(ref: PullRequestRef): Promise<{ merged: boolean; sha?: string; forbidden?: boolean }>;
+  /** Merge `ref` pinned to `headSha`, the commit whose checks were verified. */
+  mergePullRequest(ref: PullRequestRef, headSha: string): Promise<MergePullResult>;
   getPullRequestFiles?(ref: PullRequestRef): Promise<string[]>;
 }
 
@@ -204,12 +216,36 @@ export function createInstallationClient(
       if (!statuses.length && (body.state === undefined || body.state === "pending")) return true;
       return body.state === "success";
     },
-    async mergePullRequest(ref) {
+    async mergePullRequest(ref, headSha) {
+      // Squash is not universally allowed (#492): ask the repository which
+      // methods it accepts and prefer squash, then a merge commit, then
+      // rebase. If the settings can't be read, keep the old squash default.
+      let method: string | null = "squash";
+      const repo = await request(`/repos/${ref.owner}/${ref.repo}`);
+      if (repo.ok) {
+        const body = (await repo.json()) as {
+          allow_squash_merge?: boolean;
+          allow_merge_commit?: boolean;
+          allow_rebase_merge?: boolean;
+        };
+        method = body.allow_squash_merge
+          ? "squash"
+          : body.allow_merge_commit
+            ? "merge"
+            : body.allow_rebase_merge
+              ? "rebase"
+              : null;
+      }
+      if (!method) return { merged: false, noAllowedMethod: true };
+      // Pinning `sha` (#492): GitHub then refuses with 409 when the head has
+      // moved since the checks were read, so unreviewed commits never merge.
       const response = await request(`/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/merge`, {
         method: "PUT",
-        body: JSON.stringify({ merge_method: "squash" }),
+        body: JSON.stringify({ merge_method: method, sha: headSha }),
       });
       if (response.status === 403) return { merged: false, forbidden: true };
+      if (response.status === 405) return { merged: false, noAllowedMethod: true };
+      if (response.status === 409) return { merged: false, conflict: true };
       if (!response.ok) return { merged: false };
       const body = (await response.json()) as { merged?: boolean; sha?: string };
       return { merged: !!body.merged, sha: body.sha };
@@ -236,6 +272,7 @@ export type MergeFailureReason =
   | "no_pull_request"
   | "repo_mismatch"
   | "checks_failed"
+  | "head_moved"
   | "no_permission"
   | "merge_failed"
   | "waiting_for_human";
@@ -417,10 +454,11 @@ export async function mergeAcceptedFix(
     return fail(409, "checks_failed", "The pull request's required checks are not green.");
   }
 
-  // Gate 4: the app has permission to merge that repo.
-  let merged: { merged: boolean; sha?: string; forbidden?: boolean };
+  // Gate 4: the app has permission to merge that repo. The merge is pinned to
+  // the head SHA whose checks were verified (#492).
+  let merged: MergePullResult;
   try {
-    merged = await client.mergePullRequest(ref);
+    merged = await client.mergePullRequest(ref, pullRequest.headSha);
   } catch {
     await recordMergeFailure(agent, bug, "GitHub could not be reached.", db);
     return fail(409, "merge_failed", "GitHub could not be reached.");
@@ -428,6 +466,22 @@ export async function mergeAcceptedFix(
   if (merged.forbidden) {
     await recordMergeFailure(agent, bug, "The app is not allowed to merge this repository.", db);
     return fail(403, "no_permission", "The app is not allowed to merge this repository.");
+  }
+  if (merged.conflict) {
+    await recordMergeFailure(agent, bug, "The pull request changed after its checks were verified.", db);
+    return fail(
+      409,
+      "head_moved",
+      "The pull request's head commit changed since its checks were verified — link it again and verify the new commits.",
+    );
+  }
+  if (merged.noAllowedMethod) {
+    await recordMergeFailure(agent, bug, "The repository allows no merge method the app can use.", db);
+    return fail(
+      422,
+      "merge_failed",
+      "This repository allows no merge method the app can use. Enable squash, merge or rebase merges for it on GitHub.",
+    );
   }
   if (!merged.merged) {
     await recordMergeFailure(agent, bug, "GitHub refused the merge.", db);

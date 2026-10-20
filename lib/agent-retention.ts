@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { RATE_LIMIT_RETENTION_MS } from "@/lib/rate-limit";
 
 /**
  * #546: retention for the agent tables that previously grew forever. Only
@@ -37,10 +38,10 @@ export const RETENTION_SWEEP_EVERY = 50;
 
 type RetentionDb = Pick<
   PrismaClient,
-  "agentPairing" | "agentEvent" | "webhookDelivery" | "agentAuditEvent"
+  "agentPairing" | "agentEvent" | "webhookDelivery" | "agentAuditEvent" | "rateLimitHit"
 >;
 type Prunable = {
-  findMany: (args: { where: object; select: { id: true }; take: number }) => Promise<Array<{ id: string }>>;
+  findMany: (args: { where: object; select: { id: true }; take: number }) => Promise<Array<{ id: string | bigint }>>;
   deleteMany: (args: { where: object }) => Promise<{ count: number }>;
 };
 
@@ -49,6 +50,7 @@ export type AgentRetentionCounts = {
   deliveries: number;
   events: number;
   auditEvents: number;
+  rateLimitHits: number;
 };
 
 /**
@@ -72,7 +74,11 @@ export async function pruneAgentRows(
     sweep = Math.random() * RETENTION_SWEEP_EVERY < 1,
   }: { now?: Date; sweep?: boolean } = {},
 ): Promise<AgentRetentionCounts> {
-  const counts = { pairings: 0, deliveries: 0, events: 0, auditEvents: 0 };
+  const counts = { pairings: 0, deliveries: 0, events: 0, auditEvents: 0, rateLimitHits: 0 };
+  counts.rateLimitHits = await pruneBatch(
+    db.rateLimitHit as unknown as Prunable,
+    { at: { lt: BigInt(now.getTime() - RATE_LIMIT_RETENTION_MS) } },
+  );
   if (!sweep) return counts;
   counts.deliveries = await pruneBatch(
     db.webhookDelivery as unknown as Prunable,

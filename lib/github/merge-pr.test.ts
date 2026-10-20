@@ -56,6 +56,22 @@ function fakeClient(overrides: Partial<GitHubClient> = {}): GitHubClient {
   };
 }
 
+function jsonResponse(data: unknown, ok = true, status = ok ? 200 : 500): Response {
+  return { ok, status, json: async () => data, headers: new Headers() } as unknown as Response;
+}
+
+/** Route GitHub's endpoints to canned responses; anything else 500s. */
+function stubFetch(handler: (url: string, init?: RequestInit) => Response): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+    handler(String(input), init),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+const tokenRoute = (url: string) =>
+  url.endsWith("/access_tokens") ? jsonResponse({ token: "ghs_test" }) : null;
+
 beforeEach(() => {
   vi.clearAllMocks();
   db.$transaction.mockImplementation((fn: (tx: unknown) => unknown) => fn(db));
@@ -196,6 +212,24 @@ describe("mergeAcceptedFix gates (#452)", () => {
     );
   });
 
+  it("reports a moved head as its own failure and merges nothing (#492)", async () => {
+    const client = fakeClient({ mergePullRequest: vi.fn(async () => ({ merged: false, conflict: true })) });
+
+    const result = await mergeAcceptedFix(agent, "bug1", { client });
+
+    expect(result).toMatchObject({ status: 409, reason: "head_moved" });
+    expect(result.merged).toBe(false);
+  });
+
+  it("reports a repository that allows no merge method (#492)", async () => {
+    const client = fakeClient({ mergePullRequest: vi.fn(async () => ({ merged: false, noAllowedMethod: true })) });
+
+    const result = await mergeAcceptedFix(agent, "bug1", { client });
+
+    expect(result).toMatchObject({ status: 422, reason: "merge_failed" });
+    expect(result).toHaveProperty("message", expect.stringMatching(/merge method/i));
+  });
+
   it("refuses to merge when no installation is configured", async () => {
     db.bug.findFirst.mockResolvedValue(
       bugRow({ project: { repoUrl: "https://github.com/zedu/web", githubInstallationId: null } }),
@@ -218,6 +252,7 @@ describe("mergeAcceptedFix gates (#452)", () => {
       pullRequestUrl: "https://github.com/zedu/web/pull/7",
     });
     expect(client.getPullRequest).toHaveBeenCalledWith({ owner: "zedu", repo: "web", number: 7 });
+    expect(client.mergePullRequest).toHaveBeenCalledWith({ owner: "zedu", repo: "web", number: 7 }, "head-sha");
     expect(db.agentAuditEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -405,5 +440,112 @@ describe("checksGreen against the GitHub API (#491)", () => {
     });
 
     await expect(createInstallationClient("123", env).checksGreen(ref, "sha1")).resolves.toBe(false);
+  });
+});
+
+describe("mergePullRequest pins the head SHA and picks an allowed method (#492)", () => {
+  const ref = { owner: "zedu", repo: "web", number: 7 };
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const env: NodeJS.ProcessEnv = {
+    NODE_ENV: "test",
+    GITHUB_APP_ID: "123456",
+    GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const repoUrl = "https://api.github.com/repos/zedu/web";
+  const mergeUrl = "https://api.github.com/repos/zedu/web/pulls/7/merge";
+
+  it("pins the verified head SHA and uses squash when the repo allows it", async () => {
+    const fetchMock = stubFetch((url, init) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === repoUrl && !init?.method) return jsonResponse({ allow_squash_merge: true, allow_merge_commit: true, allow_rebase_merge: true });
+      if (url === mergeUrl) return jsonResponse({ merged: true, sha: "merge-sha" });
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result).toEqual({ merged: true, sha: "merge-sha" });
+    const mergeCall = fetchMock.mock.calls.find((call) => String(call[0]) === mergeUrl);
+    expect(mergeCall).toBeDefined();
+    expect(JSON.parse(String(mergeCall![1]?.body))).toEqual({ merge_method: "squash", sha: "verified-sha" });
+  });
+
+  it("falls back to a merge commit when squash is disabled", async () => {
+    const fetchMock = stubFetch((url, init) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === repoUrl && !init?.method) return jsonResponse({ allow_squash_merge: false, allow_merge_commit: true, allow_rebase_merge: false });
+      if (url === mergeUrl) return jsonResponse({ merged: true, sha: "merge-sha" });
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result.merged).toBe(true);
+    const mergeCall = fetchMock.mock.calls.find((call) => String(call[0]) === mergeUrl);
+    expect(JSON.parse(String(mergeCall![1]?.body))).toEqual({ merge_method: "merge", sha: "verified-sha" });
+  });
+
+  it("refuses to guess when the repository allows no merge method at all", async () => {
+    const fetchMock = stubFetch((url, init) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === repoUrl && !init?.method) return jsonResponse({ allow_squash_merge: false, allow_merge_commit: false, allow_rebase_merge: false });
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result).toEqual({ merged: false, noAllowedMethod: true });
+    expect(fetchMock.mock.calls.some((call) => String(call[0]) === mergeUrl)).toBe(false);
+  });
+
+  it("maps GitHub's 409 to a conflict so the caller can say the head moved", async () => {
+    stubFetch((url, init) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === repoUrl && !init?.method) return jsonResponse({ allow_squash_merge: true });
+      if (url === mergeUrl) return jsonResponse({}, false, 409);
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result).toEqual({ merged: false, conflict: true });
+  });
+
+  it("maps GitHub's 405 to an actionable no-allowed-method failure", async () => {
+    // The repo settings read fails, so the client falls back to squash and
+    // GitHub answers 405 Method Not Allowed.
+    stubFetch((url) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === mergeUrl) return jsonResponse({}, false, 405);
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result).toEqual({ merged: false, noAllowedMethod: true });
+  });
+
+  it("still maps 403 to forbidden", async () => {
+    stubFetch((url, init) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === repoUrl && !init?.method) return jsonResponse({ allow_squash_merge: true });
+      if (url === mergeUrl) return jsonResponse({}, false, 403);
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result).toEqual({ merged: false, forbidden: true });
   });
 });

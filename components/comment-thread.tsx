@@ -9,6 +9,7 @@ import {
 } from "@/lib/comments";
 import { canDeleteComment, canEditComment } from "@/lib/comment-permissions";
 import type { AppRole } from "@/lib/roles";
+import type { CommentType } from "@/lib/validations/issue";
 import { deleteCommentAction, updateCommentAction } from "@/app/actions/comments";
 import { Button } from "@/components/ui/button";
 import { CommentBody, MentionText } from "@/components/comment-body";
@@ -23,6 +24,67 @@ import { useToast } from "@/components/ui/toast";
 type AttachmentsByComment = Record<string, AttachmentView[]>;
 
 type UserOption = { id: string; name: string };
+
+function CommentTypeBadge({ type, metadata }: { type?: CommentType | null; metadata?: unknown }) {
+  if (!type || type === "comment") return null;
+
+  const meta = typeof metadata === "object" && metadata !== null ? (metadata as Record<string, unknown>) : null;
+
+  switch (type) {
+    case "bid":
+      return (
+        <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 border border-amber-200">
+          <span>🏷️</span>
+          <span>Bid</span>
+          {typeof meta?.eta === "string" ? <span className="text-amber-700">· ETA: {meta.eta}</span> : null}
+        </span>
+      );
+    case "review":
+      return (
+        <span className="inline-flex items-center gap-1 rounded-md bg-purple-50 px-2 py-0.5 text-xs font-medium text-purple-800 border border-purple-200">
+          <span>🔍</span>
+          <span>Review</span>
+          {typeof meta?.verdict === "string" ? <span className="text-purple-700">· {meta.verdict}</span> : null}
+        </span>
+      );
+    case "delivery":
+      return (
+        <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800 border border-emerald-200">
+          <span>📦</span>
+          <span>Delivery</span>
+          {typeof meta?.prUrl === "string" ? (
+            <a href={meta.prUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-emerald-900">
+              PR
+            </a>
+          ) : null}
+        </span>
+      );
+    case "request_to_merge":
+      return (
+        <span className="inline-flex items-center gap-1 rounded-md bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-800 border border-rose-200">
+          <span>🔀</span>
+          <span>Request to Merge</span>
+        </span>
+      );
+    default:
+      return null;
+  }
+}
+
+function commentCardStyle(type?: CommentType | null): string {
+  switch (type) {
+    case "bid":
+      return "border-amber-200 bg-amber-50/30";
+    case "review":
+      return "border-purple-200 bg-purple-50/30";
+    case "delivery":
+      return "border-emerald-200 bg-emerald-50/30";
+    case "request_to_merge":
+      return "border-rose-200 bg-rose-50/30 ring-1 ring-rose-200";
+    default:
+      return "border-slate-100 bg-slate-50";
+  }
+}
 
 type ViewerProps = {
   currentUserId?: string;
@@ -161,7 +223,7 @@ function CommentItem({
       className="group/comment scroll-mt-24 space-y-3 break-inside-avoid"
     >
       <article
-        className={`rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 group-target/comment:border-teal-400 group-target/comment:bg-teal-50 group-target/comment:ring-2 group-target/comment:ring-teal-500/40 motion-safe:transition-colors ${
+        className={`rounded-lg border px-4 py-3 group-target/comment:border-teal-400 group-target/comment:bg-teal-50 group-target/comment:ring-2 group-target/comment:ring-teal-500/40 motion-safe:transition-colors ${commentCardStyle(comment.type)} ${
           comment.depth > 0 ? "border-l-2 border-l-teal-600" : ""
         }`}
       >
@@ -170,16 +232,19 @@ function CommentItem({
         ) : (
           <>
             <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs text-slate-500">
-              <UserNameWithBadges
-                name={comment.author.name}
-                role={comment.author.role}
-                image={comment.author.image}
-                avatar="sm"
-                userId={comment.authorId}
-                showAuthor={comment.authorId === reporterId}
-                agentName={comment.agent?.name}
-                className="font-medium text-slate-700"
-              />
+              <div className="flex flex-wrap items-center gap-2">
+                <UserNameWithBadges
+                  name={comment.author.name}
+                  role={comment.author.role}
+                  image={comment.author.image}
+                  avatar="sm"
+                  userId={comment.authorId}
+                  showAuthor={comment.authorId === reporterId}
+                  agentName={comment.agent?.name}
+                  className="font-medium text-slate-700"
+                />
+                <CommentTypeBadge type={comment.type} metadata={comment.metadata} />
+              </div>
               <span className="inline-flex items-center gap-1.5">
                 <a
                   href={`#comment-${comment.id}`}
@@ -326,17 +391,54 @@ export function CommentThread({
   /** Files attached to each comment, by comment id (#215). */
   attachmentsByComment?: AttachmentsByComment;
 } & ViewerProps) {
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+
+  const filteredComments = comments.filter((comment) => {
+    if (typeFilter === "all") return true;
+    const cType = comment.type || "comment";
+    return cType === typeFilter;
+  });
+
   return (
     <div className="mt-4 space-y-6">
-      {comments.length === 0 ? (
+      {comments.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-100 pb-3">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 mr-2">Filter:</span>
+          {[
+            { id: "all", label: "All" },
+            { id: "comment", label: "Comments" },
+            { id: "bid", label: "Bids" },
+            { id: "review", label: "Reviews" },
+            { id: "delivery", label: "Deliveries" },
+            { id: "request_to_merge", label: "Merge Requests" },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setTypeFilter(tab.id)}
+              className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                typeFilter === tab.id
+                  ? "bg-teal-700 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {filteredComments.length === 0 ? (
         <p className="text-sm text-slate-500">
-          {readOnly
-            ? "No conversation."
-            : "No conversation yet. Start the conversation with a comment, bid, or instruction."}
+          {comments.length > 0
+            ? "No timeline entries match this filter."
+            : readOnly
+              ? "No conversation."
+              : "No conversation yet. Start the conversation with a comment, bid, or instruction."}
         </p>
       ) : (
         <ul className="space-y-4">
-          {comments.map((comment) => (
+          {filteredComments.map((comment) => (
             <CommentItem
               key={comment.id}
               comment={comment}

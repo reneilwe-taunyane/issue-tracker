@@ -21,16 +21,18 @@ vi.mock("@/lib/prisma", () => ({
     membership: { findUnique: vi.fn() },
     attachment: {
       findUnique: vi.fn(),
+      delete: vi.fn(),
     },
   },
 }));
 
 import { requireUser } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
-import { GET } from "./route";
+import { GET, DELETE } from "./route";
 
 const userMock = vi.mocked(requireUser) as unknown as ReturnType<typeof vi.fn>;
 const findUnique = vi.mocked(prisma.attachment.findUnique) as unknown as ReturnType<typeof vi.fn>;
+const attachmentDelete = vi.mocked(prisma.attachment.delete) as unknown as ReturnType<typeof vi.fn>;
 const membershipFindUnique = vi.mocked(prisma.membership.findUnique) as unknown as ReturnType<typeof vi.fn>;
 
 function makeRequest(id: string) {
@@ -160,3 +162,88 @@ describe("GET /api/attachments/[id]", () => {
     expect((await makeRequest("att-proposal")).status).toBe(404);
   });
 });
+
+describe("DELETE /api/attachments/[id] (#658)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    userMock.mockResolvedValue({ id: "user-1", role: "user" });
+  });
+
+  function makeDeleteRequest(id: string) {
+    return DELETE(new NextRequest(`http://localhost:3000/api/attachments/${id}`, { method: "DELETE" }), {
+      params: Promise.resolve({ id }),
+    });
+  }
+
+  it("returns 404 when attachment does not exist", async () => {
+    findUnique.mockResolvedValue(null);
+    const res = await makeDeleteRequest("missing-id");
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "File not found" });
+    expect(attachmentDelete).not.toHaveBeenCalled();
+  });
+
+  it("allows uploader to delete an unattached upload when abandoning form", async () => {
+    findUnique.mockResolvedValue({
+      id: "att-1",
+      uploaderId: "user-1",
+      bugId: null,
+      commentId: null,
+      redesignProposalId: null,
+      bug: null,
+      comment: null,
+      redesignProposal: null,
+    });
+    attachmentDelete.mockResolvedValue({ id: "att-1" });
+
+    const res = await makeDeleteRequest("att-1");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(attachmentDelete).toHaveBeenCalledWith({ where: { id: "att-1" } });
+  });
+
+  it("returns 403 when a non-uploader non-admin user tries to delete an attachment", async () => {
+    findUnique.mockResolvedValue({
+      id: "att-2",
+      uploaderId: "other-user",
+      bugId: "bug-1",
+      commentId: null,
+      redesignProposalId: null,
+      bug: { tenantId: "tenant-ziki" },
+      comment: null,
+      redesignProposal: null,
+    });
+
+    const res = await makeDeleteRequest("att-2");
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "Unauthorized" });
+    expect(attachmentDelete).not.toHaveBeenCalled();
+  });
+
+  it("allows tenant admin to delete an attachment", async () => {
+    tenantAccessFor.mockResolvedValueOnce({
+      tenantId: "tenant-ziki",
+      tenantName: "Ziki",
+      tenantSlug: "ziki",
+      membershipRole: "admin",
+      admin: true,
+    });
+    findUnique.mockResolvedValue({
+      id: "att-2",
+      uploaderId: "other-user",
+      bugId: "bug-1",
+      commentId: null,
+      redesignProposalId: null,
+      bug: { tenantId: "tenant-ziki" },
+      comment: null,
+      redesignProposal: null,
+    });
+    attachmentDelete.mockResolvedValue({ id: "att-2" });
+
+    const res = await makeDeleteRequest("att-2");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(attachmentDelete).toHaveBeenCalledWith({ where: { id: "att-2" } });
+  });
+});
+

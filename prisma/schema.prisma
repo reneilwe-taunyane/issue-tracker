@@ -104,10 +104,20 @@ enum RedesignStatus {
   superseded
 }
 
+/// A submission row is pending until enough independent reviewers accept it;
+/// any reject vetoes it (#617).
+enum JobSubmissionStatus {
+  pending
+  accepted
+  rejected
+}
+
 enum PointRole {
   solver
   reporter
   reviewer
+  /// Paid to the submitter's owner when a research job row is accepted (#617).
+  submission
 }
 
 enum DisputeStatus {
@@ -135,6 +145,14 @@ enum TenantJoinRequestStatus {
   pending
   approved
   rejected
+}
+
+enum CommentType {
+  comment
+  bid
+  review
+  delivery
+  request_to_merge
 }
 
 model User {
@@ -198,6 +216,10 @@ model User {
   tenantJoinRequests    TenantJoinRequest[] @relation("TenantJoinRequester")
   joinRequestsReviewed  TenantJoinRequest[] @relation("TenantJoinReviewer")
   projectAuditEvents    ProjectAuditEvent[]
+  jobsCreated           Job[]                 @relation("JobCreator")
+  jobSubmissions        JobSubmission[]       @relation("JobSubmissionBeneficiary")
+  jobReviews            JobReview[]           @relation("JobReviewBeneficiary")
+  jobReviewOffers       JobReviewOffer[]      @relation("JobReviewOfferBeneficiary")
   approvalsDecided      IssueApproval[]      @relation("ApprovalDecider")
 }
 
@@ -386,6 +408,8 @@ model Comment {
   authorId    String
   parentId    String?
   body        String
+  type        CommentType  @default(comment)
+  metadata    Json?
   createdAt   DateTime     @default(now())
   /// Set when the author edits the comment; shown as "edited".
   editedAt    DateTime?
@@ -401,6 +425,7 @@ model Comment {
   attachments Attachment[]
 
   @@index([bugId])
+  @@index([bugId, type])
   @@index([bugId, createdAt])
   @@index([parentId])
 }
@@ -531,6 +556,7 @@ model Tenant {
   joinRequests  TenantJoinRequest[]
   notifications Notification[]
   projectAuditEvents ProjectAuditEvent[]
+  jobs          Job[]
 }
 
 /// A product inside a tenant, e.g. Zedu Web or Zedu Desktop. Not the same as
@@ -562,6 +588,7 @@ model Project {
   defaultAgents        Agent[]            @relation("DefaultProjectAgent")
   testMissions         TestMission[]
   auditEvents          ProjectAuditEvent[]
+  jobs                 Job[]
   agentEvents          AgentEvent[]
   approvalRules        ApprovalRule[]
 
@@ -698,6 +725,9 @@ model Agent {
   idempotencyKeys      IdempotencyKey[]
   events               AgentEvent[]
   webhookSubscriptions WebhookSubscription[]
+  jobSubmissions       JobSubmission[]
+  jobReviews           JobReview[]
+  jobReviewOffers      JobReviewOffer[]
   inboxItems           AgentInboxItem[]
 
   @@unique([ownerUserId, defaultProjectId])
@@ -933,6 +963,105 @@ model ReviewOffer {
   beneficiary       User      @relation(fields: [beneficiaryUserId], references: [id], onDelete: Cascade)
 
   @@index([bugId, status])
+  @@index([agentId, status])
+  @@index([beneficiaryUserId, status])
+}
+
+/// Non-code work, e.g. research, where many agents submit rows and N
+/// independent reviewers accept them (#617). The bug flow is untouched.
+model Job {
+  id               String    @id @default(cuid())
+  tenantId         String
+  projectId        String
+  /// The person who posted the job.
+  createdById      String
+  brief            String
+  /// JSON-Schema-like description of each submission row, or null for free-form.
+  submissionSchema Json?
+  /// The submission-row field dedupe is keyed on, e.g. "url".
+  dedupeKey        String
+  maxSubmissions   Int
+  pointsPerAccepted Int
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @default(now()) @updatedAt
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy        User      @relation("JobCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  submissions      JobSubmission[]
+
+  @@index([tenantId, createdAt])
+  @@index([projectId])
+}
+
+/// One row an agent posted for a job. Dedupe is per job on the resolved
+/// `dedupeKey` value (#617).
+model JobSubmission {
+  id                String             @id @default(cuid())
+  jobId             String
+  agentId           String
+  /// The person the points go to — the submitting agent's owner.
+  beneficiaryUserId String
+  data              Json
+  /// The resolved value of `job.dedupeKey` in `data`.
+  dedupeKey         String
+  status            JobSubmissionStatus @default(pending)
+  /// Independent accepts needed before the row is accepted (default 2, capped
+  /// by how many distinct reviewers actually exist).
+  reviewsNeeded     Int                @default(2)
+  reviewedAt        DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @default(now()) @updatedAt
+  job               Job                @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  agent             Agent              @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  beneficiary       User               @relation("JobSubmissionBeneficiary", fields: [beneficiaryUserId], references: [id], onDelete: Cascade)
+  reviews           JobReview[]
+  offers            JobReviewOffer[]
+
+  @@unique([jobId, dedupeKey])
+  @@index([jobId, status])
+  @@index([agentId])
+  @@index([status])
+}
+
+/// One reviewer's verdict on a submission. Any reject vetoes; accepts from
+/// `reviewsNeeded` distinct owners pay the submitter once (#617).
+model JobReview {
+  id                String           @id @default(cuid())
+  submissionId      String
+  agentId           String
+  beneficiaryUserId String
+  verdict           ValidationVerdict
+  notes             String?
+  createdAt         DateTime         @default(now())
+  submission        JobSubmission    @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  agent             Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  beneficiary       User             @relation("JobReviewBeneficiary", fields: [beneficiaryUserId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, agentId])
+  @@index([agentId])
+}
+
+/// Mirrors ReviewOffer for job submissions: accept an offer first, then leave
+/// a verdict, with the same TTL and deadline semantics (#597, #617).
+model JobReviewOffer {
+  id                String         @id @default(cuid())
+  submissionId      String
+  agentId           String
+  beneficiaryUserId String
+  /// "offered", "accepted", "completed", or "expired".
+  status            String         @default("offered")
+  offeredAt         DateTime       @default(now())
+  acceptedAt        DateTime?
+  completedAt       DateTime?
+  expiredAt         DateTime?
+  deadlineAt        DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @default(now()) @updatedAt
+  submission        JobSubmission  @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  agent             Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  beneficiary       User           @relation("JobReviewOfferBeneficiary", fields: [beneficiaryUserId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, status])
   @@index([agentId, status])
   @@index([beneficiaryUserId, status])
 }

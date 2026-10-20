@@ -556,6 +556,43 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
 
   const resolution = currentResolution(bug.status, latestStatusChange);
 
+  const extraBadgeCount =
+    (bug.isBoosted && !bug.isDeleted ? 1 : 0) +
+    (bug.type ? 1 : 0) +
+    (bug.category ? 1 : 0) +
+    1 +
+    (volunteerCount > 0 ? 1 : 0);
+
+  const headerActions = (
+    <>
+      {canSelfAssign ? (
+        <SelfAssignButton
+          bugId={bug.id}
+          isAssignedToMe={isAssignee}
+          size="sm"
+        />
+      ) : null}
+      {!bug.isDeleted ? (
+        <WatchButton
+          bugId={bug.id}
+          watching={isWatchingIssue(user.id, [bug.reporterId, bug.assigneeId], watchRow)}
+        />
+      ) : null}
+      {canTriage && !bug.isDeleted && !bug.duplicateOf ? (
+        <MarkDuplicateButton bugId={bug.id} />
+      ) : null}
+      {!bug.isDeleted && userId && (bug.reporterId === userId || bug.assigneeId === userId) ? (
+        <Link
+          href={`/points/disputes/new?bug=${bug.number}`}
+          className="text-xs font-medium text-teal-700 hover:text-teal-800 hover:underline"
+          title="Say your points award for this issue is missing or wrong"
+        >
+          Dispute award
+        </Link>
+      ) : null}
+    </>
+  );
+
   // What a delete keeps, shown the same way in every delete/restore message (#692).
   const deletionCounts = {
     comments: comments.visibleCount,
@@ -700,24 +737,19 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
                 </span>{" "}
                 {bug.title}
               </h1>
+
+              {/* On mobile (<sm): compact horizontal scroll action row pinned directly under title (#698) */}
+              <div
+                data-testid="mobile-actions-row"
+                className="flex items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden sm:hidden print:hidden"
+              >
+                {headerActions}
+              </div>
+
               <div className="flex flex-wrap items-center gap-2">
                 {bug.isDeleted ? (
                   <span className="inline-flex items-center gap-1 rounded-full border border-red-300 bg-red-100 px-2.5 py-0.5 text-xs font-semibold text-red-900 shadow-2xs">
                     🗑️ Deleted
-                  </span>
-                ) : null}
-                {bug.isBoosted && !bug.isDeleted ? (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-900 shadow-2xs">
-                    ⚡ Boosted
-                  </span>
-                ) : null}
-                {bug.type ? (
-                  <span
-                    className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${getIssueTypeBadgeClass(
-                      bug.type.name,
-                    )}`}
-                  >
-                    {bug.type.name}
                   </span>
                 ) : null}
                 <Badge className={statusClass[bug.status]}>
@@ -726,18 +758,44 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
                 <Badge className={severityClass[bug.severity]}>
                   {severityLabels[bug.severity]}
                 </Badge>
-                {bug.category ? (
-                  <Badge className="border border-teal-200 bg-teal-50 text-teal-950">
-                    {bug.category.name}
-                  </Badge>
-                ) : null}
-                <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600">
-                  {bug.voteCount} score ({voterSummary.likes.count} like{voterSummary.likes.count === 1 ? "" : "s"}, {voterSummary.dislikes.count} dislike{voterSummary.dislikes.count === 1 ? "" : "s"})
-                </span>
-                {volunteerCount > 0 ? (
-                  <span className="inline-flex items-center rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-700 border border-indigo-200">
-                    {volunteerCount} {volunteerCount === 1 ? "agent volunteered" : "agents volunteered"}
-                  </span>
+                {extraBadgeCount > 0 ? (
+                  <details className="group sm:contents">
+                    <summary
+                      aria-label={`${extraBadgeCount} more details`}
+                      className="cursor-pointer list-none select-none inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 sm:hidden"
+                    >
+                      +{extraBadgeCount}
+                    </summary>
+                    <span className="contents">
+                      {bug.isBoosted && !bug.isDeleted ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-900 shadow-2xs">
+                          ⚡ Boosted
+                        </span>
+                      ) : null}
+                      {bug.type ? (
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${getIssueTypeBadgeClass(
+                            bug.type.name,
+                          )}`}
+                        >
+                          {bug.type.name}
+                        </span>
+                      ) : null}
+                      {bug.category ? (
+                        <Badge className="border border-teal-200 bg-teal-50 text-teal-950">
+                          {bug.category.name}
+                        </Badge>
+                      ) : null}
+                      <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600">
+                        {bug.voteCount} score ({voterSummary.likes.count} like{voterSummary.likes.count === 1 ? "" : "s"}, {voterSummary.dislikes.count} dislike{voterSummary.dislikes.count === 1 ? "" : "s"})
+                      </span>
+                      {volunteerCount > 0 ? (
+                        <span className="inline-flex items-center rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-700 border border-indigo-200">
+                          {volunteerCount} {volunteerCount === 1 ? "agent volunteered" : "agents volunteered"}
+                        </span>
+                      ) : null}
+                    </span>
+                  </details>
                 ) : null}
               </div>
             </div>
@@ -760,25 +818,10 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
           </div>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-2 self-start sm:pt-6 print:hidden">
-          {!bug.isDeleted ? (
-            <WatchButton
-              bugId={bug.id}
-              watching={isWatchingIssue(user.id, [bug.reporterId, bug.assigneeId], watchRow)}
-            />
-          ) : null}
-          {canTriage && !bug.isDeleted && !bug.duplicateOf ? (
-            <MarkDuplicateButton bugId={bug.id} />
-          ) : null}
-          {!bug.isDeleted && userId && (bug.reporterId === userId || bug.assigneeId === userId) ? (
-            <Link
-              href={`/points/disputes/new?bug=${bug.number}`}
-              className="text-xs font-medium text-teal-700 hover:text-teal-800 hover:underline"
-              title="Say your points award for this issue is missing or wrong"
-            >
-              Dispute award
-            </Link>
-          ) : null}
+        <div className="hidden sm:block">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 self-start sm:pt-6 print:hidden">
+            {headerActions}
+          </div>
         </div>
       </div>
 

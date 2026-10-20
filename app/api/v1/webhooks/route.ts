@@ -5,6 +5,7 @@ import { checkSsrf } from "@/lib/webhooks/ssrf";
 import { generateSigningSecret, encryptSigningSecret } from "@/lib/webhooks/sign";
 import { createSubscriptionRecord, normalizeSubscriptionEvents } from "@/lib/webhooks/manage";
 import { prisma } from "@/lib/prisma";
+import { deliverySummaries } from "@/lib/webhooks/history";
 
 const createWebhookSchema = z.object({
   url: z.string().url().max(2048),
@@ -44,7 +45,14 @@ export async function GET(request: NextRequest) {
       orderBy: { createdAt: "desc" },
     }).catch(() => null);
     if (!subscriptions) return NextResponse.json({ error: "Webhook storage unavailable." }, { status: 503 });
-    return NextResponse.json({ subscriptions });
+    // #644: why a subscription is failing, without a second call.
+    const summaries = await deliverySummaries(prisma, subscriptions.map((s) => s.id)).catch(() => null);
+    return NextResponse.json({
+      subscriptions: subscriptions.map((subscription) => ({
+        ...subscription,
+        ...(summaries?.get(subscription.id) ?? { lastError: null, lastErrorAt: null, lastDeliveredAt: null }),
+      })),
+    });
   });
 }
 

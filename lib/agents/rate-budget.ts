@@ -4,6 +4,9 @@ import {
   RATE_LIMIT_MESSAGE,
   type RateLimitConfig,
 } from "@/lib/rate-limit";
+import { withAgentBudgetHeaders, type AgentBudgetQuota } from "@/lib/agents/rate-budget-headers";
+
+export { agentBudgetHeaders, withAgentBudgetHeaders, type AgentBudgetQuota } from "@/lib/agents/rate-budget-headers";
 
 /**
  * Per-agent read and write budgets (#440).
@@ -34,8 +37,8 @@ export const AGENT_RATE_BUDGETS = {
 export type BudgetedAgent = { id: string; burst?: boolean | null };
 
 export type AgentBudgetResult =
-  | { allowed: true }
-  | { allowed: false; retryAfterSeconds: number };
+  | ({ allowed: true } & AgentBudgetQuota)
+  | ({ allowed: false; retryAfterSeconds: number } & AgentBudgetQuota);
 
 export function agentBudgetKey(agentId: string, kind: AgentBudgetKind): string {
   return `agent:${agentId}:${kind}`;
@@ -55,20 +58,34 @@ export async function consumeAgentBudget(
   kind: AgentBudgetKind,
   now = Date.now(),
 ): Promise<AgentBudgetResult> {
-  const result = await consumeRateLimit(
-    agentBudgetKey(agent.id, kind),
-    agentBudget(agent, kind),
-    now,
-  );
-  if (result.allowed) return { allowed: true };
+  const config = agentBudget(agent, kind);
+  const result = await consumeRateLimit(agentBudgetKey(agent.id, kind), config, now);
+  const quota: AgentBudgetQuota = {
+    kind,
+    limit: config.max,
+    windowSeconds: Math.round(config.windowMs / 1000),
+    ...(typeof result.remaining === "number" ? { remaining: Math.max(0, result.remaining) } : {}),
+    ...(typeof result.resetAfterMs === "number" ? { resetSeconds: Math.max(0, Math.ceil(result.resetAfterMs / 1000)) } : {}),
+  };
+  if (result.allowed) return { allowed: true, ...quota };
   // Retry-After is whole seconds; round up so a retry at that time succeeds.
-  return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil(result.retryAfterMs / 1000)) };
+  return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil(result.retryAfterMs / 1000)), ...quota };
 }
 
-/** The `429` an API route returns when an agent is over budget. */
-export function agentBudgetExceededResponse(retryAfterSeconds: number): NextResponse {
-  return NextResponse.json(
-    { error: RATE_LIMIT_MESSAGE },
+/**
+ * The `429` an API route returns when an agent is over budget. It names the
+ * exhausted budget and when it resets, in the body and the `RateLimit-*`
+ * headers (#646), as well as `Retry-After`.
+ */
+export function agentBudgetExceededResponse(retryAfterSeconds: number, budget: AgentBudgetQuota = {}): NextResponse {
+  const response = NextResponse.json(
+    {
+      error: RATE_LIMIT_MESSAGE,
+      ...(budget.kind ? { budget: budget.kind } : {}),
+      ...(typeof budget.limit === "number" ? { limit: budget.limit } : {}),
+      resetSeconds: budget.resetSeconds ?? retryAfterSeconds,
+    },
     { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
   );
+  return withAgentBudgetHeaders(response, { remaining: 0, resetSeconds: retryAfterSeconds, ...budget });
 }

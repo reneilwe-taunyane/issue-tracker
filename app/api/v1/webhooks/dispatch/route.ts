@@ -2,6 +2,7 @@ import { timingSafeEqual, createHash } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { dispatchDueDeliveries } from "@/lib/webhooks/deliver";
 import { pruneAgentRows } from "@/lib/agent-retention";
+import { sweepOrphanedAttachments } from "@/lib/attachment-retention";
 import { prisma } from "@/lib/prisma";
 import { isAgentPlatformEnabled } from "@/lib/feature-flags";
 import { agentPlatformDisabledResponse } from "@/lib/agents/platform-gate";
@@ -14,9 +15,10 @@ async function runDispatch() {
   const headers = { "Cache-Control": "no-store" };
   try {
     const processed = await dispatchDueDeliveries();
-    // Bounded data retention sweep (1 in N runs does the work, #546); a
+    // Bounded data retention sweep (1 in N runs does the work, #546, #658); a
     // failing sweep never blocks delivery — the next run picks it up.
     await Promise.resolve().then(() => pruneAgentRows(prisma)).catch(() => null);
+    await Promise.resolve().then(() => sweepOrphanedAttachments(prisma)).catch(() => null);
     return NextResponse.json({ processed }, { headers });
   } catch {
     return NextResponse.json(
